@@ -1,5 +1,5 @@
 import express from 'express';
-import { createProxyMiddleware, fixRequestBody } from 'http-proxy-middleware';
+import { createProxyMiddleware } from 'http-proxy-middleware';
 import cors from 'cors';
 import jwt from 'jsonwebtoken';
 
@@ -37,77 +37,60 @@ app.get('/', (req, res) => {
   res.send('API Gateway funcționează (simplified auth)');
 });
 
-const searchProxy = createProxyMiddleware({
-    router: (req) => {
-      const ms1ServiceUrl = process.env.MS1_SERVICE_URL || 'http://localhost:3001';
-      const ms2ServiceUrl = process.env.MS2_SERVICE_URL || 'http://localhost:3002';
-      
-      console.log('Gateway received request body:', req.body);
-      
-      // req.body este populat de express.json()
-      if (req.body && req.body.type === 'Client') {
-          console.log('Gateway: Routing to MS1 for Client search');
-          return ms1ServiceUrl;
-      }
-      if (req.body && req.body.type === 'Companie') {
-          console.log('Gateway: Routing to MS2 for Company search');
-          return ms2ServiceUrl;
-      }
-      
-      console.log('Gateway: No route match for search type:', req.body ? req.body.type : 'undefined');
-      return ms1ServiceUrl; // Default to MS1 if no match (we should handle this error better)
-    },
-    pathRewrite: (path, req) => {
-        // Path-ul original este /search
-        let newPath = path;
-        if (req.body && req.body.type === 'Client') {
-            newPath = '/customers'; // Noul path pentru MS1
-            console.log(`Gateway: Rewriting path for Client to ${newPath}`);
-        } else if (req.body && req.body.type === 'Companie') {
-            newPath = '/companies'; // Noul path pentru MS2
-            console.log(`Gateway: Rewriting path for Company to ${newPath}`);
-        }
-        return newPath;
-    },
-    changeOrigin: true,
-    onProxyReq: (proxyReq, req, res) => {
-        // Make sure the body is properly sent to the upstream service
-        if (!req.body || Object.keys(req.body).length === 0) {
-            console.log('Gateway: Empty body detected');
-            return;
-        }
-        
-        const bodyData = JSON.stringify(req.body);
-        proxyReq.setHeader('Content-Type', 'application/json');
-        proxyReq.setHeader('Content-Length', Buffer.byteLength(bodyData));
-        proxyReq.write(bodyData);
-        proxyReq.end();
-        
-        console.log('Gateway: Forwarded body to upstream service:', bodyData);
-    },
-    onError: (err, req, res) => {
-        console.error('Gateway: Proxy error:', err);
-        if (!res.headersSent) {
-             res.status(500).json({ message: 'Proxy error', details: err.message });
-        }
-    },
-    onProxyRes: (proxyRes, req, res) => {
-        console.log(`Gateway: Received response from upstream for ${req.method} ${req.originalUrl}, status: ${proxyRes.statusCode}`);
-    }
-});
-
-
-app.post('/search', authenticateToken, (req, res, next) => {
+// Process search requests
+app.post('/search', authenticateToken, (req, res) => {
     const { type, name } = req.body;
     console.log('Gateway: /search hit with body:', req.body);
+    
     if (!type || !name) {
         return res.status(400).json({ message: "Type and name are required in POST body for /search." });
     }
+    
     if (type !== 'Client' && type !== 'Companie') {
         return res.status(400).json({ message: "Invalid search type. Must be 'Client' or 'Companie'." });
     }
-    // Dacă validarea trece, continuă la middleware-ul de proxy
-    searchProxy(req, res, next);
+    
+    // Forward to appropriate microservice
+    const ms1ServiceUrl = process.env.MS1_SERVICE_URL || 'http://localhost:3001';
+    const ms2ServiceUrl = process.env.MS2_SERVICE_URL || 'http://localhost:3002';
+    
+    let targetUrl;
+    let endpoint;
+    
+    if (type === 'Client') {
+        console.log('Gateway: Routing to MS1 for Client search');
+        targetUrl = `${ms1ServiceUrl}/customers`;
+        endpoint = '/customers';
+    } else if (type === 'Companie') {
+        console.log('Gateway: Routing to MS2 for Company search');
+        targetUrl = `${ms2ServiceUrl}/companies`;
+        endpoint = '/companies';
+    }
+    
+    // Forward the request
+    console.log(`Gateway: Forwarding to ${targetUrl}`);
+    
+    // Using fetch instead of a proxy middleware for more direct control
+    fetch(targetUrl, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': req.headers.authorization
+        },
+        body: JSON.stringify(req.body)
+    })
+    .then(response => response.json())
+    .then(data => {
+        console.log(`Gateway: Received response from ${endpoint}:`, data);
+        res.json(data);
+    })
+    .catch(error => {
+        console.error(`Gateway: Error forwarding to ${endpoint}:`, error);
+        res.status(500).json({ 
+            message: `Error forwarding request to ${type} service`,
+            error: error.message
+        });
+    });
 });
 
 app.listen(PORT, () => {
