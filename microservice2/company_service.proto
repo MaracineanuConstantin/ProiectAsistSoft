@@ -1,0 +1,17 @@
+syntax = "proto3";
+
+package company;
+
+// Serviciul expus de Microservice 1 pentru Microservice 2
+service CompanyValuationService {
+  // Metoda pentru a obtine valoarea estimata a unei companii
+  rpc GetValuation (CompanyValuationRequest) returns (CompanyValuationResponse);
+}
+
+message CompanyValuationRequest {
+  string name = 1;
+}
+
+message CompanyValuationResponse {
+  string valoare_estimata = 1;
+}
