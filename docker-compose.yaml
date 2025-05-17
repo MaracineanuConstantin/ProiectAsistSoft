@@ -11,6 +11,11 @@ services:
       - api-gateway
     networks:
       - app-network
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
 
   api-gateway:
     build: ./api-gateway
@@ -22,13 +27,18 @@ services:
       MS2_SERVICE_URL: http://microservice2:3002
     depends_on:
       auth-service:
-        condition: service_started # Sau service_healthy dacă auth-service are healthcheck
+        condition: service_started
       microservice1:
-        condition: service_started # API Gateway poate porni, dar va da erori dacă MS1 nu e gata
+        condition: service_started
       microservice2:
-        condition: service_started # Idem pentru MS2
+        condition: service_started
     networks:
       - app-network
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8000"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
 
   auth-service:
     build: ./auth-service
@@ -36,6 +46,11 @@ services:
       - "4500:4500"
     networks:
       - app-network
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:4500"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
 
   microservice1:
     build: ./microservice1
@@ -47,11 +62,16 @@ services:
       MS1_GRPC_PORT: 50051
       MS2_SERVICE_URL: http://microservice2:3002
       RABBITMQ_SERVICE_URL: amqp://guest:guest@rabbitmq:5672
-    depends_on: # MS1 depinde doar de RabbitMQ pentru a porni
+    depends_on:
       rabbitmq:
         condition: service_healthy
     networks:
       - app-network
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
 
   microservice2:
     build: ./microservice2
@@ -61,22 +81,30 @@ services:
       MS2_HTTP_PORT: 3002
       MS1_GRPC_SERVICE_ADDRESS: microservice1:50051
       RABBITMQ_SERVICE_URL: amqp://guest:guest@rabbitmq:5672
-    depends_on: # MS2 depinde doar de RabbitMQ pentru a porni
+    depends_on:
       rabbitmq:
         condition: service_healthy
     networks:
       - app-network
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3002/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
 
   rabbitmq:
     image: rabbitmq:3.13-management-alpine
+    hostname: rabbitmq
     ports:
       - "5672:5672"
       - "15672:15672"
     environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
       RABBITMQ_NODENAME: rabbit@rabbitmq
     volumes:
-      - rabbitmq_data:/var/lib/rabbitmq/ # Aici referențiem volumul
-    healthcheck: # Adăugat pentru a permite `condition: service_healthy`
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
       test: ["CMD", "rabbitmqctl", "status"]
       interval: 10s
       timeout: 5s

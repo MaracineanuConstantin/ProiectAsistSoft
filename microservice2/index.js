@@ -15,33 +15,61 @@ app.use(cors());
 app.use(express.json());
 
 let rabbitChannel;
+let rabbitConnection;
 let grpcClient;
 const pendingCompanyEmployeeRequests = {}; // Pentru a stoca promisiunile pt mesajele RabbitMQ
 
 // --- RabbitMQ Setup ---
 async function setupRabbitMQ() {
   try {
-    const connection = await amqp.connect(RABBITMQ_URL);
-    rabbitChannel = await connection.createChannel();
-    console.log('MS2 connected to RabbitMQ');
-
+    console.log('MS2: Attempting to connect to RabbitMQ at:', RABBITMQ_URL);
+    
+    rabbitConnection = await amqp.connect(RABBITMQ_URL);
+    console.log('MS2: Connected to RabbitMQ');
+    
+    rabbitConnection.on('error', (err) => {
+      console.error('MS2: RabbitMQ connection error:', err);
+      setTimeout(setupRabbitMQ, 5000);
+    });
+    
+    rabbitConnection.on('close', () => {
+      console.error('MS2: RabbitMQ connection closed unexpectedly');
+      setTimeout(setupRabbitMQ, 5000);
+    });
+    
+    rabbitChannel = await rabbitConnection.createChannel();
+    console.log('MS2: Created RabbitMQ channel');
+    
+    // Asigură-te că exchange-ul există
+    await rabbitChannel.assertExchange('details_exchange', 'topic', { durable: false });
+    console.log("MS2: Exchange 'details_exchange' asserted");
+    
     // Coada pentru mesajele de la MS1 despre numărul de angajați
     const companyDetailsQueue = 'ms2_company_details_queue';
     await rabbitChannel.assertQueue(companyDetailsQueue, { durable: false });
-    // Asigură-te că exchange-ul există înainte de a lega coada
-    await rabbitChannel.assertExchange('details_exchange', 'topic', { durable: false });
-    await rabbitChannel.bindQueue(companyDetailsQueue, 'details_exchange', 'company.details.#'); // Ascultă toate detaliile companiei
+    console.log(`MS2: Queue '${companyDetailsQueue}' asserted`);
+    
+    await rabbitChannel.bindQueue(companyDetailsQueue, 'details_exchange', 'company.details.#');
+    console.log(`MS2: Queue '${companyDetailsQueue}' bound to exchange with routing key 'company.details.#'`);
 
     rabbitChannel.consume(companyDetailsQueue, (msg) => {
       if (msg) {
         try {
           const content = JSON.parse(msg.content.toString());
           console.log('MS2 received from RabbitMQ:', content);
-          if (content.name && pendingCompanyEmployeeRequests[content.name]) {
-            pendingCompanyEmployeeRequests[content.name].resolve(content.numar_de_angajati);
-            clearTimeout(pendingCompanyEmployeeRequests[content.name].timer);
-            delete pendingCompanyEmployeeRequests[content.name];
-          }
+          
+          // Convertim numele la lowercase pentru match mai robust
+          const companyName = content.name.toLowerCase();
+          
+          // Verifică toate cheile din pendingCompanyEmployeeRequests (case insensitive)
+          Object.keys(pendingCompanyEmployeeRequests).forEach(key => {
+            if (key.toLowerCase() === companyName) {
+              console.log(`MS2: Resolving pending request for ${key} with employees: ${content.numar_de_angajati}`);
+              pendingCompanyEmployeeRequests[key].resolve(content.numar_de_angajati);
+              clearTimeout(pendingCompanyEmployeeRequests[key].timer);
+              delete pendingCompanyEmployeeRequests[key];
+            }
+          });
         } catch (e) {
           console.error("MS2: Error processing RabbitMQ message:", e);
         }
@@ -56,16 +84,22 @@ async function setupRabbitMQ() {
 
 // --- gRPC Client Setup ---
 function setupGrpcClient() {
-  const packageDefinition = protoLoader.loadSync(PROTO_PATH, {
-    keepCase: true,
-    longs: String,
-    enums: String,
-    defaults: true,
-    oneofs: true,
-  });
-  const companyProto = grpc.loadPackageDefinition(packageDefinition).company;
-  grpcClient = new companyProto.CompanyValuationService(MS1_GRPC_URL, grpc.credentials.createInsecure());
-  console.log('MS2 gRPC client setup for MS1');
+  try {
+    console.log(`MS2: Setting up gRPC client to connect to MS1 at ${MS1_GRPC_URL}`);
+    const packageDefinition = protoLoader.loadSync(PROTO_PATH, {
+      keepCase: true,
+      longs: String,
+      enums: String,
+      defaults: true,
+      oneofs: true,
+    });
+    const companyProto = grpc.loadPackageDefinition(packageDefinition).company;
+    grpcClient = new companyProto.CompanyValuationService(MS1_GRPC_URL, grpc.credentials.createInsecure());
+    console.log('MS2 gRPC client setup for MS1 completed');
+  } catch (error) {
+    console.error('MS2: Error setting up gRPC client:', error);
+    setTimeout(setupGrpcClient, 5000);
+  }
 }
 
 // --- HTTP Endpoints ---
@@ -77,16 +111,18 @@ app.get('/internal/client-wealth/:name', (req, res) => {
 
   if (clientName.toLowerCase() === 'elon musk') {
     res.json({ avere_detinuta: '$USD 10,000,000' });
+    
     // Trimite "Functie in companie" prin RabbitMQ către MS1 (Scenario 1, pasul 4)
     if (rabbitChannel) {
-      const message = { name: clientName, functie_in_companie: 'CEO' };
-      // Asigură-te că exchange-ul există. Publisher-ul ar trebui să-l declare.
-      rabbitChannel.assertExchange('details_exchange', 'topic', { durable: false })
-        .then(() => {
-            rabbitChannel.publish('details_exchange', 'client.details.elonmusk', Buffer.from(JSON.stringify(message)));
-            console.log('MS2 sent to RabbitMQ (for MS1):', message);
-        })
-        .catch(err => console.error("MS2: Error asserting exchange before publish:", err));
+      try {
+        const message = { name: clientName, functie_in_companie: 'CEO' };
+        rabbitChannel.publish('details_exchange', 'client.details.elonmusk', Buffer.from(JSON.stringify(message)));
+        console.log('MS2 sent to RabbitMQ (for MS1):', message);
+      } catch (err) {
+        console.error("MS2: Error publishing client function message:", err);
+      }
+    } else {
+      console.error("MS2: RabbitMQ channel not available when trying to send client function");
     }
   } else {
     res.status(404).json({ message: 'Client wealth information not found' });
@@ -95,23 +131,32 @@ app.get('/internal/client-wealth/:name', (req, res) => {
 
 // Endpoint pentru API Gateway (Scenario 2)
 app.post('/companies', async (req, res) => {
-  const companyName = req.body.name;
-  console.log(`MS2 /companies POST request for: ${companyName}`);
-
-  if (!companyName) {
-    return res.status(400).json({ message: "Company name is required in body" });
-  }
-
-  if (companyName.toLowerCase() !== 'tesla') {
-    console.log(`MS2: Company ${companyName} not found.`);
-    return res.status(404).json({
-      found: false,
-      message: 'Nu s-a găsit niciun rezultat în baza de date.',
-      details: `Company '${companyName}' not found. Only 'Tesla' is known.`
-    });
-  }
-
   try {
+    console.log('MS2: Received POST request to /companies with body:', req.body);
+    const companyName = req.body.name;
+    
+    if (!companyName) {
+      console.log('MS2: Missing company name in request');
+      return res.status(400).json({ message: "Company name is required in body" });
+    }
+
+    if (companyName.toLowerCase() !== 'tesla') {
+      console.log(`MS2: Company ${companyName} not found.`);
+      return res.status(200).json({
+        found: false,
+        message: 'Nu s-a găsit niciun rezultat în baza de date.',
+        details: `Company '${companyName}' not found. Only 'Tesla' is known.`
+      });
+    }
+
+    if (!grpcClient) {
+      console.log('MS2: gRPC client not initialized, trying to set up again');
+      setupGrpcClient();
+      if (!grpcClient) {
+        return res.status(500).json({ message: 'MS2: gRPC client not available' });
+      }
+    }
+
     // 1. Cere "Valoare estimata" de la MS1 prin gRPC
     console.log(`MS2: Calling MS1 gRPC for valuation of ${companyName}`);
     const valuationResponse = await new Promise((resolve, reject) => {
@@ -129,30 +174,35 @@ app.post('/companies', async (req, res) => {
 
     // 2. Așteaptă "Numar de angajati" de la MS1 prin RabbitMQ
     const angajatiPromise = new Promise((resolve, reject) => {
-        const timer = setTimeout(() => {
-            delete pendingCompanyEmployeeRequests[companyName];
-            reject(new Error('Timeout waiting for company employee count from RabbitMQ'));
-        }, 10000); // 10 secunde timeout
+      const timer = setTimeout(() => {
+        console.log(`MS2: Timeout waiting for employee data for ${companyName}`);
+        delete pendingCompanyEmployeeRequests[companyName];
+        // În loc să respingem promisiunea, putem trimite o valoare default
+        resolve('Unknown');
+      }, 10000); // 10 secunde timeout
 
-        pendingCompanyEmployeeRequests[companyName] = { resolve, reject, timer };
+      pendingCompanyEmployeeRequests[companyName] = { resolve, reject, timer };
+      console.log(`MS2: Created pending request for ${companyName} employees`);
     });
 
-    // MS1 ar trebui să trimită mesajul după ce răspunde la apelul gRPC
-
     const numarAngajati = await angajatiPromise;
-    console.log(`MS2: Received employee count via RabbitMQ: ${numarAngajati}`);
+    console.log(`MS2: Employee count resolved to: ${numarAngajati}`);
 
     res.json({
       name: companyName,
-      type: "Companie", // Adăugat pentru a se potrivi cu formatul din frontend
+      type: "Companie",
       valoare_estimata: valoareEstimata,
       numar_de_angajati: numarAngajati,
     });
-
   } catch (error) {
-    console.error(`MS2 error processing company ${companyName}:`, error.message || error);
-    res.status(500).json({ message: 'Error getting company details from MS2', error: error.message || error });
+    console.error(`MS2 error processing request:`, error.message || error);
+    res.status(500).json({ message: 'Error processing request in MS2', error: error.message || error });
   }
+});
+
+// Add a GET check endpoint
+app.get('/health', (req, res) => {
+  res.json({ status: 'MS2 is healthy' });
 });
 
 app.listen(MS2_PORT, async () => {

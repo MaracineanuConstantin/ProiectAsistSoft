@@ -39,9 +39,11 @@ app.get('/', (req, res) => {
 
 const searchProxy = createProxyMiddleware({
     router: (req) => {
-
       const ms1ServiceUrl = process.env.MS1_SERVICE_URL || 'http://localhost:3001';
       const ms2ServiceUrl = process.env.MS2_SERVICE_URL || 'http://localhost:3002';
+      
+      console.log('Gateway received request body:', req.body);
+      
       // req.body este populat de express.json()
       if (req.body && req.body.type === 'Client') {
           console.log('Gateway: Routing to MS1 for Client search');
@@ -51,8 +53,9 @@ const searchProxy = createProxyMiddleware({
           console.log('Gateway: Routing to MS2 for Company search');
           return ms2ServiceUrl;
       }
-      console.log('Gateway: No route match for search type:', req.body.type);
-        return null; // Important: returnează null dacă nu se potrivește nicio rută
+      
+      console.log('Gateway: No route match for search type:', req.body ? req.body.type : 'undefined');
+      return ms1ServiceUrl; // Default to MS1 if no match (we should handle this error better)
     },
     pathRewrite: (path, req) => {
         // Path-ul original este /search
@@ -67,7 +70,21 @@ const searchProxy = createProxyMiddleware({
         return newPath;
     },
     changeOrigin: true,
-    onProxyReq: fixRequestBody, // Important pentru a re-stream-ui body-ul după ce express.json l-a consumat
+    onProxyReq: (proxyReq, req, res) => {
+        // Make sure the body is properly sent to the upstream service
+        if (!req.body || Object.keys(req.body).length === 0) {
+            console.log('Gateway: Empty body detected');
+            return;
+        }
+        
+        const bodyData = JSON.stringify(req.body);
+        proxyReq.setHeader('Content-Type', 'application/json');
+        proxyReq.setHeader('Content-Length', Buffer.byteLength(bodyData));
+        proxyReq.write(bodyData);
+        proxyReq.end();
+        
+        console.log('Gateway: Forwarded body to upstream service:', bodyData);
+    },
     onError: (err, req, res) => {
         console.error('Gateway: Proxy error:', err);
         if (!res.headersSent) {
