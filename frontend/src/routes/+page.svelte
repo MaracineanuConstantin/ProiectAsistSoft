@@ -20,7 +20,6 @@
     let regSuccess = null;
 
     onMount(() => {
-        // ✅ Fix: nu redeclara cu const
         authToken = localStorage.getItem('authToken');
         currentUsername = localStorage.getItem('currentUsername');
         if (authToken && currentUsername) {
