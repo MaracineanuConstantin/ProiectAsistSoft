@@ -13,7 +13,7 @@ const RABBITMQ_URL = process.env.RABBITMQ_SERVICE_URL || 'amqp://guest:guest@loc
 const PROTO_PATH = './company_service.proto';
 
 const app = express();
-app.use(cors()); // Permite CORS dacă e necesar (ex. testare directă)
+app.use(cors());
 app.use(express.json());
 
 let rabbitChannel;
@@ -41,11 +41,9 @@ async function setupRabbitMQ() {
     rabbitChannel = await rabbitConnection.createChannel();
     console.log('MS1: Created RabbitMQ channel');
     
-    // Asigură-te că exchange-ul există înainte de orice operațiune
     await rabbitChannel.assertExchange('details_exchange', 'topic', { durable: false });
     console.log("MS1: Exchange 'details_exchange' asserted");
     
-    // Coada pentru mesajele de la MS2 despre funcția clientului
     const clientDetailsQueue = 'ms1_client_details_queue';
     await rabbitChannel.assertQueue(clientDetailsQueue, { durable: false });
     console.log(`MS1: Queue '${clientDetailsQueue}' asserted`);
@@ -59,10 +57,8 @@ async function setupRabbitMQ() {
           const content = JSON.parse(msg.content.toString());
           console.log('MS1 received from RabbitMQ:', content);
           
-          // Convertim numele la lowercase pentru match mai robust
           const clientName = content.name.toLowerCase();
           
-          // Verifică toate cheile din pendingClientFunctionRequests (case insensitive)
           Object.keys(pendingClientFunctionRequests).forEach(key => {
             if (key.toLowerCase() === clientName) {
               console.log(`MS1: Resolving pending request for ${key} with function: ${content.functie_in_companie}`);
@@ -102,7 +98,6 @@ function startGrpcServer() {
       console.log(`MS1 gRPC GetValuation called for: ${companyName}`);
       
       if (companyName.toLowerCase() === 'tesla') {
-        // Trimite mesaj prin RabbitMQ către MS2
         if (rabbitChannel) {
           try {
             const message = { name: companyName, numar_de_angajati: "25,000" };
@@ -165,7 +160,6 @@ app.post('/customers', async (req, res) => {
       const timer = setTimeout(() => {
         console.log(`MS1: Timeout waiting for function data for ${clientName}`);
         delete pendingClientFunctionRequests[clientName];
-        // În loc să respingem promisiunea, putem trimite o valoare default pentru a nu opri flow-ul
         resolve('Unknown Position'); 
       }, 10000); // 10 secunde timeout
 
