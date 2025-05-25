@@ -5,10 +5,10 @@ import protoLoader from '@grpc/proto-loader';
 import cors from 'cors';
 
 const MS2_PORT = parseInt(process.env.MS2_HTTP_PORT) || 3002;
-const MS1_GRPC_URL = process.env.MS1_GRPC_SERVICE_ADDRESS || 'localhost:50051'; // Va fi microservice1:50051 în Docker
+const MS1_GRPC_URL = process.env.MS1_GRPC_SERVICE_ADDRESS || 'localhost:50051';
 const RABBITMQ_URL = process.env.RABBITMQ_SERVICE_URL || 'amqp://guest:guest@localhost:5672';
 
-const PROTO_PATH = './company_service.proto'; // Copie a definiției proto
+const PROTO_PATH = './company_service.proto'; 
 
 const app = express();
 app.use(cors());
@@ -17,7 +17,7 @@ app.use(express.json());
 let rabbitChannel;
 let rabbitConnection;
 let grpcClient;
-const pendingCompanyEmployeeRequests = {}; // Pentru a stoca promisiunile pt mesajele RabbitMQ
+const pendingCompanyEmployeeRequests = {};
 
 // --- RabbitMQ Setup ---
 async function setupRabbitMQ() {
@@ -40,11 +40,9 @@ async function setupRabbitMQ() {
     rabbitChannel = await rabbitConnection.createChannel();
     console.log('MS2: Created RabbitMQ channel');
     
-    // Asigură-te că exchange-ul există
     await rabbitChannel.assertExchange('details_exchange', 'topic', { durable: false });
     console.log("MS2: Exchange 'details_exchange' asserted");
     
-    // Coada pentru mesajele de la MS1 despre numărul de angajați
     const companyDetailsQueue = 'ms2_company_details_queue';
     await rabbitChannel.assertQueue(companyDetailsQueue, { durable: false });
     console.log(`MS2: Queue '${companyDetailsQueue}' asserted`);
@@ -58,10 +56,8 @@ async function setupRabbitMQ() {
           const content = JSON.parse(msg.content.toString());
           console.log('MS2 received from RabbitMQ:', content);
           
-          // Convertim numele la lowercase pentru match mai robust
           const companyName = content.name.toLowerCase();
           
-          // Verifică toate cheile din pendingCompanyEmployeeRequests (case insensitive)
           Object.keys(pendingCompanyEmployeeRequests).forEach(key => {
             if (key.toLowerCase() === companyName) {
               console.log(`MS2: Resolving pending request for ${key} with employees: ${content.numar_de_angajati}`);
@@ -177,7 +173,6 @@ app.post('/companies', async (req, res) => {
       const timer = setTimeout(() => {
         console.log(`MS2: Timeout waiting for employee data for ${companyName}`);
         delete pendingCompanyEmployeeRequests[companyName];
-        // În loc să respingem promisiunea, putem trimite o valoare default
         resolve('Unknown');
       }, 10000); // 10 secunde timeout
 
