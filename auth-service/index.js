@@ -5,12 +5,12 @@ import bcrypt from 'bcrypt';
 
 const app = express();
 const PORT = 4500;
-const JWT_SECRET = '123'; // în realitate, folosește .env!
+const JWT_SECRET = '123';
 
 app.use(cors());
 app.use(express.json());
 
-const users = []; // Simulăm o "bază de date" în memorie
+const users = []; 
 
 // Register
 app.post('/register', async (req, res) => {
